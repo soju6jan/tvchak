@@ -1,6 +1,6 @@
 from collections import OrderedDict
 
-import requests
+import requests, json
 from flask import Response
 from support import d, default_headers, logger
 from tool import ToolUtil
@@ -19,9 +19,20 @@ class Tvchak:
         'Accept-Encoding': 'gzip, deflate, br',
         'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'
     }
+
+    spotv_headers = {
+        'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+        'accept-encoding': 'gzip, deflate, br',
+        'accept-language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        'referer': 'https://tvchak.com/',
+        'upgrade-insecure-requests': '1',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36',
+    }
+
     _stream_url = 'https://azure2986.fastedge.net'
 
     _channels = None
+    _spotv_channels = None
 
     @classmethod
     def ch_list(cls):
@@ -51,22 +62,20 @@ class Tvchak:
                 tmp += cate[order]
             for ch in tmp:
                 cls._channels[ch['id']] = ch
-
-        ret = list(cls._channels.values())
-        """
+        
+        cls._spotv_channels = OrderedDict()
         data = requests.post('https://tvchak.com/api/sports/live/mainchannel.php', headers=default_headers, data={'category':0}).json()
         for ch in data['dataAll']:
-            if ch['showing'] != 0:
+            if ch['showing'] == 1:
                 title = f"[{ch['leagueName']}] {ch['awayName']} vs {ch['homeName']}"
-                ret.append({
+                cls._spotv_channels[ch['liveCode']] = {
                     'name': title,
                     'logo': '',
                     'current': title,
-                    'id': ch['code'],
+                    'id': ch['liveCode'],
                     'category': 'SPOTV',
-                })
-        """
-        return ret
+                }
+        return list(cls._channels.values()) + list(cls._spotv_channels.values())
         
     
 
@@ -75,30 +84,42 @@ class Tvchak:
         if cls._channels == None:
             cls.ch_list()
 
-        if cls._channels[ch_id]['url'] == '':
-            url = f"{cls._stream_url}/live/{ch_id}/chunklist.m3u8"
-            res = requests.get(url, headers=cls.headers)
-            if res.status_code != 200:
-                url = f"{cls._stream_url}/live2/{ch_id}/chunklist.m3u8"
+        ch = cls._channels.get(ch_id)
+        if ch != None:
+            if cls._channels[ch_id]['url'] == '':
+                url = f"{cls._stream_url}/live/{ch_id}/chunklist.m3u8"
                 res = requests.get(url, headers=cls.headers)
-                if res.status_code == 200:
-                    cls._channels[ch_id]['url'] = 'live2'
+                if res.status_code != 200:
+                    url = f"{cls._stream_url}/live2/{ch_id}/chunklist.m3u8"
+                    res = requests.get(url, headers=cls.headers)
+                    if res.status_code == 200:
+                        cls._channels[ch_id]['url'] = 'live2'
+                else:
+                    cls._channels[ch_id]['url'] = 'live'
             else:
-                cls._channels[ch_id]['url'] = 'live'
-        else:
-            url = f"{cls._stream_url}/{cls._channels[ch_id]['url']}/{ch_id}/chunklist.m3u8"
-            res = requests.get(url, headers=cls.headers)
+                url = f"{cls._stream_url}/{cls._channels[ch_id]['url']}/{ch_id}/chunklist.m3u8"
+                res = requests.get(url, headers=cls.headers)
+            new_data = []
+            for line in res.text.splitlines():
+                line = line.strip()
+                if line.endswith('.ts'):
+                    new = ToolUtil.make_apikey_url(f"/{P.package_name}/api/segment.ts?ch_id={ch_id}&ts={line}&live={cls._channels[ch_id]['url']}")
+                    new_data.append(new)
+                else:
+                    new_data.append(line)
+            data = '\n'.join(new_data)
+            return 'text', data
 
-        new_data = []
-        for line in res.text.splitlines():
-            line = line.strip()
-            if line.endswith('.ts'):
-                new = ToolUtil.make_apikey_url(f"/{P.package_name}/api/segment.ts?ch_id={ch_id}&ts={line}&live={cls._channels[ch_id]['url']}")
-                new_data.append(new)
-            else:
-                new_data.append(line)
-        data = '\n'.join(new_data)
-        return data
+        elif cls._spotv_channels.get(ch_id) != None:
+            url = f'https://sdr4w5g.allyearcdn.com/player/live/?g={ch_id}&q=0&sports=false'
+            text = requests.get(url, headers=cls.spotv_headers).text
+            idx = text.index('var tokenJson = ')
+            start = text.index('{', idx)
+            end = text.index('}', start+1)
+            tmp = text[start:end+1]
+            data = json.loads(tmp)
+            return 'redirect', data['authid']
+
 
 
     @classmethod

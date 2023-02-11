@@ -30,8 +30,11 @@ class ModuleMain(PluginModuleBase):
             if sub == 'm3u':
                 return Tvchak.make_m3u()
             elif sub == 'url.m3u8':
-                m3u8_text = Tvchak.get_m3u8(req.args.get('ch_id'))
-                return m3u8_text
+                mode, data = Tvchak.get_m3u8(req.args.get('ch_id'))
+                if mode == 'text':
+                    return data
+                else:
+                    return redirect(data)
             elif sub == 'segment.ts':
                 return Tvchak.segment(req)
         except Exception as e: 
